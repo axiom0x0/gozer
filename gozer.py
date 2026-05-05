@@ -98,8 +98,8 @@ def detect_interfaces(uplink_arg=None, victim_arg=None):
             pick = int(input('choose the form of the destructor: ')) - 1
             if 0 <= pick < len(candidates):
                 return uplink, candidates[pick]
-        except (ValueError, EOFError):
-            pass
+        except (ValueError, EOFError, KeyboardInterrupt):
+            sys.exit(0)
         print('try again')
 
 
@@ -298,4 +298,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        cleanup()
