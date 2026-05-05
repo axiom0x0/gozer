@@ -95,7 +95,7 @@ def detect_interfaces(uplink_arg=None, victim_arg=None):
         print(f'  {n}) {name}')
     while True:
         try:
-            pick = int(input('pick one: ')) - 1
+            pick = int(input('choose the form of the destructor: ')) - 1
             if 0 <= pick < len(candidates):
                 return uplink, candidates[pick]
         except (ValueError, EOFError):
@@ -164,7 +164,7 @@ def cleanup(signum=None, frame=None):
         return
     _cleaning = True
 
-    print('\n[*] tearing down...')
+    print('\n[*] total protonic reversal achieved - gozer terminated')
 
     proc = _state.get('cap_proc')
     if proc and proc.poll() is None:
@@ -233,7 +233,7 @@ def main():
     args = p.parse_args()
 
     if os.geteuid() != 0:
-        die('need to be root')
+        die('are you a god? ...run as root')
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
