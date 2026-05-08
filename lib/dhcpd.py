@@ -130,7 +130,8 @@ class DHCPServer:
             self.leases[mac].expires = time.time() + self.lease_time
             return self.leases[mac].ip
 
-        # TODO: expire stale leases so the pool doesn't just fill up
+        self._expire_stale()
+
         used = {l.ip for l in self.leases.values()}
         lo = int.from_bytes(socket.inet_aton(self.pool_start), 'big')
         hi = int.from_bytes(socket.inet_aton(self.pool_end), 'big')
@@ -144,6 +145,14 @@ class DHCPServer:
 
         self.log.warning('address pool exhausted')
         return None
+
+    def _expire_stale(self):
+        now = time.time()
+        expired = [mac for mac, lease in self.leases.items()
+                   if lease.expires < now]
+        for mac in expired:
+            self.log.debug(f'expired lease for {mac} ({self.leases[mac].ip})')
+            del self.leases[mac]
 
     def _send(self, msg_type, xid, chaddr, hlen, yiaddr):
         pkt = self._build(msg_type, xid, chaddr, hlen, yiaddr)

