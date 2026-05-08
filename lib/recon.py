@@ -118,6 +118,14 @@ class ReconEngine:
         if self._writer:
             self._writer.close()
 
+    def reset(self):
+        self._seen.clear()
+        self.findings.clear()
+        if self._writer:
+            self._writer.close()
+        if self.pcap_path:
+            self._writer = PcapWriter(self.pcap_path, append=False, sync=True)
+
     def _is_victim_traffic(self, pkt):
         if not self.pool_range:
             return True
@@ -185,8 +193,31 @@ class ReconEngine:
             self._flag('LLDP', info)
 
     def _handle_dhcp(self, pkt):
-        opts = pkt[DHCP].options
-        for opt in opts:
+        opts = {opt[0]: opt[1:] for opt in pkt[DHCP].options
+                if isinstance(opt, tuple) and len(opt) >= 2}
+
+        # vendor class ID is a direct device fingerprint
+        vendor_class = opts.get('vendor_class_id')
+        if vendor_class:
+            val = vendor_class[0]
+            if isinstance(val, bytes):
+                val = val.decode(errors='replace')
+            self._flag('DHCP Fingerprint', {'vendor_class': val})
+
+        # param_req_list tells us what provisioning the device expects
+        req_list = opts.get('param_req_list')
+        if req_list:
+            requested = req_list[0] if isinstance(req_list[0], list) else [req_list[0]]
+            interesting = [(r, INTERESTING_DHCP_OPTS[r]) for r in requested
+                           if r in INTERESTING_DHCP_OPTS]
+            if interesting:
+                labels = [f'{name} ({code})' for code, name in interesting]
+                self._flag('DHCP Request', {
+                    'requesting': ', '.join(labels),
+                })
+
+        # flag provisioning options the server handed back
+        for opt in pkt[DHCP].options:
             if isinstance(opt, tuple) and len(opt) >= 2:
                 code = opt[0] if isinstance(opt[0], int) else None
                 if code and code in INTERESTING_DHCP_OPTS:
@@ -345,14 +376,14 @@ class ReconEngine:
 
         parts = []
         for k, v in details.items():
-            if k in ('url', 'path', 'query', 'method'):
-                parts.append(f'{Y}{k}{RST}={C}{v}{RST}')
-            elif k in ('src', 'address', 'mgmt_addr'):
-                parts.append(f'{Y}{k}{RST}={G}{v}{RST}')
-            elif k == 'vendor':
-                parts.append(f'{Y}{k}{RST}={Y}{v}{RST}')
+            vs = str(v)
+            if k in ('src', 'dst', 'address', 'mgmt_addr'):
+                parts.append(f'{k}={G}{vs}{RST}')
+            elif k in ('url', 'path', 'query', 'method', 'server',
+                        'vendor_class', 'requesting'):
+                parts.append(f'{k}={C}{vs}{RST}')
             else:
-                parts.append(f'{Y}{k}{RST}={v}')
+                parts.append(f'{k}={vs}')
 
         detail_str = ', '.join(parts)
         print(f'  {Y}[!]{RST} {B}{category}{RST}: {detail_str}')

